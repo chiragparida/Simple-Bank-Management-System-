@@ -148,6 +148,5 @@ def get_account_transactions(account_id: str):
 def get_all_transactions():
     return {"total": len(transactions_db), "transactions": transactions_db}
 
-# ✅ FIXED: pass app object directly, no string reference
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001)
