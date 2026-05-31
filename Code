@@ -1,0 +1,153 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import Optional, List
+from datetime import datetime
+import uuid
+import uvicorn
+
+app = FastAPI(
+    title="Bank Management System",
+    description="Complete banking API with CRUD operations",
+    version="1.0.0",
+)
+app.add_middleware(CORSMiddleware, allow_origins=["*"],
+    allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+accounts_db: dict = {}
+transactions_db: List[dict] = []
+
+class AccountCreate(BaseModel):
+    owner_name:      str   = Field(..., min_length=2, example="Alice Johnson")
+    email:           str   = Field(..., example="alice@example.com")
+    account_type:    str   = Field(..., example="savings")
+    initial_deposit: float = Field(..., ge=0, example=1000.0)
+
+class AccountUpdate(BaseModel):
+    owner_name:   Optional[str] = None
+    email:        Optional[str] = None
+    account_type: Optional[str] = None
+
+class DepositRequest(BaseModel):
+    amount: float = Field(..., gt=0, example=500.0)
+
+class WithdrawRequest(BaseModel):
+    amount: float = Field(..., gt=0, example=200.0)
+
+class TransferRequest(BaseModel):
+    to_account_id: str   = Field(..., example="<target-id>")
+    amount:        float = Field(..., gt=0, example=300.0)
+
+def get_account_or_404(account_id: str) -> dict:
+    if account_id not in accounts_db:
+        raise HTTPException(404, f"Account '{account_id}' not found")
+    return accounts_db[account_id]
+
+def log_transaction(account_id, txn_type, amount, note=""):
+    transactions_db.append({
+        "id": str(uuid.uuid4()), "account_id": account_id,
+        "type": txn_type, "amount": amount,
+        "note": note, "timestamp": datetime.utcnow().isoformat(),
+    })
+
+@app.get("/", tags=["Root"])
+def root():
+    return {"message": "Bank Management System API", "docs": "/docs"}
+
+@app.post("/accounts", status_code=201, tags=["Accounts"])
+def create_account(data: AccountCreate):
+    account_id = str(uuid.uuid4())
+    account = {
+        "account_id": account_id, "owner_name": data.owner_name,
+        "email": data.email, "account_type": data.account_type,
+        "balance": data.initial_deposit, "is_active": True,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    accounts_db[account_id] = account
+    if data.initial_deposit > 0:
+        log_transaction(account_id, "DEPOSIT", data.initial_deposit, "Initial deposit")
+    return {"message": "Account created successfully", "account": account}
+
+@app.get("/accounts", tags=["Accounts"])
+def list_accounts():
+    return {"total": len(accounts_db), "accounts": list(accounts_db.values())}
+
+@app.get("/accounts/{account_id}", tags=["Accounts"])
+def get_account(account_id: str):
+    return get_account_or_404(account_id)
+
+@app.put("/accounts/{account_id}", tags=["Accounts"])
+def update_account(account_id: str, data: AccountUpdate):
+    account = get_account_or_404(account_id)
+    if not account["is_active"]:
+        raise HTTPException(400, "Cannot update a closed account")
+    if data.owner_name:   account["owner_name"]  = data.owner_name
+    if data.email:        account["email"]        = data.email
+    if data.account_type: account["account_type"] = data.account_type
+    account["updated_at"] = datetime.utcnow().isoformat()
+    return {"message": "Account updated successfully", "account": account}
+
+@app.delete("/accounts/{account_id}", tags=["Accounts"])
+def delete_account(account_id: str):
+    account = get_account_or_404(account_id)
+    if not account["is_active"]:
+        raise HTTPException(400, "Account is already closed")
+    if account["balance"] > 0:
+        raise HTTPException(400, f"Clear balance before closing")
+    account["is_active"] = False
+    account["closed_at"] = datetime.utcnow().isoformat()
+    return {"message": "Account closed successfully", "account_id": account_id}
+
+@app.post("/accounts/{account_id}/deposit", tags=["Transactions"])
+def deposit(account_id: str, req: DepositRequest):
+    account = get_account_or_404(account_id)
+    if not account["is_active"]:
+        raise HTTPException(400, "Account is closed")
+    account["balance"] += req.amount
+    log_transaction(account_id, "DEPOSIT", req.amount)
+    return {"message": f"Deposited successfully", "new_balance": account["balance"]}
+
+@app.post("/accounts/{account_id}/withdraw", tags=["Transactions"])
+def withdraw(account_id: str, req: WithdrawRequest):
+    account = get_account_or_404(account_id)
+    if not account["is_active"]:
+        raise HTTPException(400, "Account is closed")
+    if account["balance"] < req.amount:
+        raise HTTPException(400, f"Insufficient funds. Balance: {account['balance']:.2f}")
+    account["balance"] -= req.amount
+    log_transaction(account_id, "WITHDRAWAL", req.amount)
+    return {"message": f"Withdrawn successfully", "new_balance": account["balance"]}
+
+@app.post("/accounts/{account_id}/transfer", tags=["Transactions"])
+def transfer(account_id: str, req: TransferRequest):
+    if account_id == req.to_account_id:
+        raise HTTPException(400, "Cannot transfer to the same account")
+    sender   = get_account_or_404(account_id)
+    receiver = get_account_or_404(req.to_account_id)
+    if not sender["is_active"]:   raise HTTPException(400, "Sender account is closed")
+    if not receiver["is_active"]: raise HTTPException(400, "Receiver account is closed")
+    if sender["balance"] < req.amount:
+        raise HTTPException(400, f"Insufficient funds. Available: {sender['balance']:.2f}")
+    sender["balance"]   -= req.amount
+    receiver["balance"] += req.amount
+    log_transaction(account_id,        "TRANSFER_OUT", req.amount, f"To {req.to_account_id}")
+    log_transaction(req.to_account_id, "TRANSFER_IN",  req.amount, f"From {account_id}")
+    return {
+        "message": "Transferred successfully",
+        "sender_balance": sender["balance"],
+        "receiver_balance": receiver["balance"],
+    }
+
+@app.get("/accounts/{account_id}/transactions", tags=["Transactions"])
+def get_account_transactions(account_id: str):
+    get_account_or_404(account_id)
+    txns = [t for t in transactions_db if t["account_id"] == account_id]
+    return {"account_id": account_id, "total": len(txns), "transactions": txns}
+
+@app.get("/transactions", tags=["Transactions"])
+def get_all_transactions():
+    return {"total": len(transactions_db), "transactions": transactions_db}
+
+# ✅ FIXED: pass app object directly, no string reference
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8001)
