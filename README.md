@@ -1,7 +1,7 @@
 # Simple-Bank-Management-System-
 Bank Management System — Overview This is a REST API built with FastAPI and Uvicorn in Python that simulates a basic banking system. Here's what it does:
 What it is
-A backend web application that runs on your local machine and handles bank account operations through API endpoints. No frontend UI — you interact with it via Swagger UI at http://localhost:8000/docs or tools like Postman.
+A backend web application that runs on your local machine and handles bank account operations through API endpoints. No frontend UI — you interact with it via Swagger UI at http://localhost:8001/docs or tools like Postman.
 
 What it can do
 Account Management (CRUD)
