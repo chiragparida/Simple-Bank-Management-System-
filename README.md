@@ -22,4 +22,4 @@ Transaction History
 View all transactions for a specific account
 View every transaction across all accounts
 
-Done By-Chirag Parida , Kaushik Laxman Gadipelly
+Done By-Chirag Parida and  Kaushik Laxman Gadipelly
