@@ -1,152 +1,425 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from typing import Optional, List
-from datetime import datetime
-import uuid
-import uvicorn
+import sqlite3
+from datetime import datetime, timedelta
 
-app = FastAPI(
-    title="Bank Management System",
-    description="Complete banking API with CRUD operations",
-    version="1.0.0",
-)
-app.add_middleware(CORSMiddleware, allow_origins=["*"],
-    allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-accounts_db: dict = {}
-transactions_db: List[dict] = []
+class Library:
+    def __init__(self, database="library.db"):
+        self.conn = sqlite3.connect(database)
+        self.cursor = self.conn.cursor()
+        self.create_tables()
 
-class AccountCreate(BaseModel):
-    owner_name:      str   = Field(..., min_length=2, example="Alice Johnson")
-    email:           str   = Field(..., example="alice@example.com")
-    account_type:    str   = Field(..., example="savings")
-    initial_deposit: float = Field(..., ge=0, example=1000.0)
+    def create_tables(self):
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS books (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                author TEXT NOT NULL,
+                category TEXT,
+                quantity INTEGER DEFAULT 1,
+                available INTEGER DEFAULT 1
+            )
+        """)
 
-class AccountUpdate(BaseModel):
-    owner_name:   Optional[str] = None
-    email:        Optional[str] = None
-    account_type: Optional[str] = None
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                phone TEXT
+            )
+        """)
 
-class DepositRequest(BaseModel):
-    amount: float = Field(..., gt=0, example=500.0)
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                book_id INTEGER,
+                member_id INTEGER,
+                issue_date TEXT,
+                due_date TEXT,
+                return_date TEXT,
+                fine REAL DEFAULT 0,
+                FOREIGN KEY(book_id) REFERENCES books(id),
+                FOREIGN KEY(member_id) REFERENCES members(id)
+            )
+        """)
 
-class WithdrawRequest(BaseModel):
-    amount: float = Field(..., gt=0, example=200.0)
+        self.conn.commit()
 
-class TransferRequest(BaseModel):
-    to_account_id: str   = Field(..., example="<target-id>")
-    amount:        float = Field(..., gt=0, example=300.0)
+    # ---------------- BOOK MANAGEMENT ----------------
 
-def get_account_or_404(account_id: str) -> dict:
-    if account_id not in accounts_db:
-        raise HTTPException(404, f"Account '{account_id}' not found")
-    return accounts_db[account_id]
+    def add_book(self, title, author, category, quantity):
+        self.cursor.execute("""
+            INSERT INTO books
+            (title, author, category, quantity, available)
+            VALUES (?, ?, ?, ?, ?)
+        """, (title, author, category, quantity, quantity))
 
-def log_transaction(account_id, txn_type, amount, note=""):
-    transactions_db.append({
-        "id": str(uuid.uuid4()), "account_id": account_id,
-        "type": txn_type, "amount": amount,
-        "note": note, "timestamp": datetime.utcnow().isoformat(),
-    })
+        self.conn.commit()
+        print("\nBook added successfully!")
 
-@app.get("/", tags=["Root"])
-def root():
-    return {"message": "Bank Management System API", "docs": "/docs"}
+    def remove_book(self, book_id):
+        self.cursor.execute(
+            "DELETE FROM books WHERE id = ?",
+            (book_id,)
+        )
 
-@app.post("/accounts", status_code=201, tags=["Accounts"])
-def create_account(data: AccountCreate):
-    account_id = str(uuid.uuid4())
-    account = {
-        "account_id": account_id, "owner_name": data.owner_name,
-        "email": data.email, "account_type": data.account_type,
-        "balance": data.initial_deposit, "is_active": True,
-        "created_at": datetime.utcnow().isoformat(),
-    }
-    accounts_db[account_id] = account
-    if data.initial_deposit > 0:
-        log_transaction(account_id, "DEPOSIT", data.initial_deposit, "Initial deposit")
-    return {"message": "Account created successfully", "account": account}
+        if self.cursor.rowcount == 0:
+            print("\nBook not found!")
+        else:
+            self.conn.commit()
+            print("\nBook removed successfully!")
 
-@app.get("/accounts", tags=["Accounts"])
-def list_accounts():
-    return {"total": len(accounts_db), "accounts": list(accounts_db.values())}
+    def display_books(self):
+        self.cursor.execute("SELECT * FROM books")
+        books = self.cursor.fetchall()
 
-@app.get("/accounts/{account_id}", tags=["Accounts"])
-def get_account(account_id: str):
-    return get_account_or_404(account_id)
+        print("\n" + "=" * 80)
+        print("LIBRARY BOOKS")
+        print("=" * 80)
 
-@app.put("/accounts/{account_id}", tags=["Accounts"])
-def update_account(account_id: str, data: AccountUpdate):
-    account = get_account_or_404(account_id)
-    if not account["is_active"]:
-        raise HTTPException(400, "Cannot update a closed account")
-    if data.owner_name:   account["owner_name"]  = data.owner_name
-    if data.email:        account["email"]        = data.email
-    if data.account_type: account["account_type"] = data.account_type
-    account["updated_at"] = datetime.utcnow().isoformat()
-    return {"message": "Account updated successfully", "account": account}
+        if not books:
+            print("No books available.")
+            return
 
-@app.delete("/accounts/{account_id}", tags=["Accounts"])
-def delete_account(account_id: str):
-    account = get_account_or_404(account_id)
-    if not account["is_active"]:
-        raise HTTPException(400, "Account is already closed")
-    if account["balance"] > 0:
-        raise HTTPException(400, f"Clear balance before closing")
-    account["is_active"] = False
-    account["closed_at"] = datetime.utcnow().isoformat()
-    return {"message": "Account closed successfully", "account_id": account_id}
+        for book in books:
+            print(
+                f"ID: {book[0]} | "
+                f"Title: {book[1]} | "
+                f"Author: {book[2]} | "
+                f"Category: {book[3]} | "
+                f"Available: {book[5]}/{book[4]}"
+            )
 
-@app.post("/accounts/{account_id}/deposit", tags=["Transactions"])
-def deposit(account_id: str, req: DepositRequest):
-    account = get_account_or_404(account_id)
-    if not account["is_active"]:
-        raise HTTPException(400, "Account is closed")
-    account["balance"] += req.amount
-    log_transaction(account_id, "DEPOSIT", req.amount)
-    return {"message": f"Deposited successfully", "new_balance": account["balance"]}
+    def search_book(self, keyword):
+        self.cursor.execute("""
+            SELECT * FROM books
+            WHERE title LIKE ?
+               OR author LIKE ?
+               OR category LIKE ?
+        """, (
+            f"%{keyword}%",
+            f"%{keyword}%",
+            f"%{keyword}%"
+        ))
 
-@app.post("/accounts/{account_id}/withdraw", tags=["Transactions"])
-def withdraw(account_id: str, req: WithdrawRequest):
-    account = get_account_or_404(account_id)
-    if not account["is_active"]:
-        raise HTTPException(400, "Account is closed")
-    if account["balance"] < req.amount:
-        raise HTTPException(400, f"Insufficient funds. Balance: {account['balance']:.2f}")
-    account["balance"] -= req.amount
-    log_transaction(account_id, "WITHDRAWAL", req.amount)
-    return {"message": f"Withdrawn successfully", "new_balance": account["balance"]}
+        books = self.cursor.fetchall()
 
-@app.post("/accounts/{account_id}/transfer", tags=["Transactions"])
-def transfer(account_id: str, req: TransferRequest):
-    if account_id == req.to_account_id:
-        raise HTTPException(400, "Cannot transfer to the same account")
-    sender   = get_account_or_404(account_id)
-    receiver = get_account_or_404(req.to_account_id)
-    if not sender["is_active"]:   raise HTTPException(400, "Sender account is closed")
-    if not receiver["is_active"]: raise HTTPException(400, "Receiver account is closed")
-    if sender["balance"] < req.amount:
-        raise HTTPException(400, f"Insufficient funds. Available: {sender['balance']:.2f}")
-    sender["balance"]   -= req.amount
-    receiver["balance"] += req.amount
-    log_transaction(account_id,        "TRANSFER_OUT", req.amount, f"To {req.to_account_id}")
-    log_transaction(req.to_account_id, "TRANSFER_IN",  req.amount, f"From {account_id}")
-    return {
-        "message": "Transferred successfully",
-        "sender_balance": sender["balance"],
-        "receiver_balance": receiver["balance"],
-    }
+        print("\nSEARCH RESULTS")
+        print("-" * 80)
 
-@app.get("/accounts/{account_id}/transactions", tags=["Transactions"])
-def get_account_transactions(account_id: str):
-    get_account_or_404(account_id)
-    txns = [t for t in transactions_db if t["account_id"] == account_id]
-    return {"account_id": account_id, "total": len(txns), "transactions": txns}
+        if not books:
+            print("No books found.")
+            return
 
-@app.get("/transactions", tags=["Transactions"])
-def get_all_transactions():
-    return {"total": len(transactions_db), "transactions": transactions_db}
+        for book in books:
+            print(
+                f"ID: {book[0]} | "
+                f"{book[1]} | "
+                f"Author: {book[2]} | "
+                f"Available: {book[5]}/{book[4]}"
+            )
+
+    # ---------------- MEMBER MANAGEMENT ----------------
+
+    def add_member(self, name, email, phone):
+        try:
+            self.cursor.execute("""
+                INSERT INTO members
+                (name, email, phone)
+                VALUES (?, ?, ?)
+            """, (name, email, phone))
+
+            self.conn.commit()
+            print("\nMember registered successfully!")
+
+        except sqlite3.IntegrityError:
+            print("\nEmail already registered!")
+
+    def display_members(self):
+        self.cursor.execute("SELECT * FROM members")
+        members = self.cursor.fetchall()
+
+        print("\n" + "=" * 70)
+        print("LIBRARY MEMBERS")
+        print("=" * 70)
+
+        if not members:
+            print("No members registered.")
+            return
+
+        for member in members:
+            print(
+                f"ID: {member[0]} | "
+                f"Name: {member[1]} | "
+                f"Email: {member[2]} | "
+                f"Phone: {member[3]}"
+            )
+
+    # ---------------- ISSUE BOOK ----------------
+
+    def issue_book(self, book_id, member_id):
+
+        self.cursor.execute(
+            "SELECT available FROM books WHERE id = ?",
+            (book_id,)
+        )
+
+        book = self.cursor.fetchone()
+
+        if not book:
+            print("\nBook not found!")
+            return
+
+        if book[0] <= 0:
+            print("\nBook is currently unavailable!")
+            return
+
+        self.cursor.execute(
+            "SELECT id FROM members WHERE id = ?",
+            (member_id,)
+        )
+
+        member = self.cursor.fetchone()
+
+        if not member:
+            print("\nMember not found!")
+            return
+
+        issue_date = datetime.now()
+        due_date = issue_date + timedelta(days=14)
+
+        self.cursor.execute("""
+            INSERT INTO transactions
+            (book_id, member_id, issue_date, due_date)
+            VALUES (?, ?, ?, ?)
+        """, (
+            book_id,
+            member_id,
+            issue_date.strftime("%Y-%m-%d"),
+            due_date.strftime("%Y-%m-%d")
+        ))
+
+        self.cursor.execute("""
+            UPDATE books
+            SET available = available - 1
+            WHERE id = ?
+        """, (book_id,))
+
+        self.conn.commit()
+
+        print("\nBook issued successfully!")
+        print("Issue Date:", issue_date.strftime("%Y-%m-%d"))
+        print("Due Date:", due_date.strftime("%Y-%m-%d"))
+
+    # ---------------- RETURN BOOK ----------------
+
+    def return_book(self, transaction_id):
+
+        self.cursor.execute("""
+            SELECT book_id, due_date, return_date
+            FROM transactions
+            WHERE id = ?
+        """, (transaction_id,))
+
+        transaction = self.cursor.fetchone()
+
+        if not transaction:
+            print("\nTransaction not found!")
+            return
+
+        book_id, due_date, return_date = transaction
+
+        if return_date:
+            print("\nBook has already been returned!")
+            return
+
+        today = datetime.now().date()
+        due = datetime.strptime(due_date, "%Y-%m-%d").date()
+
+        overdue_days = max((today - due).days, 0)
+
+        # Fine = ₹5 per overdue day
+        fine = overdue_days * 5
+
+        self.cursor.execute("""
+            UPDATE transactions
+            SET return_date = ?, fine = ?
+            WHERE id = ?
+        """, (
+            today.strftime("%Y-%m-%d"),
+            fine,
+            transaction_id
+        ))
+
+        self.cursor.execute("""
+            UPDATE books
+            SET available = available + 1
+            WHERE id = ?
+        """, (book_id,))
+
+        self.conn.commit()
+
+        print("\nBook returned successfully!")
+        print("Overdue Days:", overdue_days)
+        print("Fine: ₹", fine)
+
+    # ---------------- TRANSACTIONS ----------------
+
+    def display_transactions(self):
+
+        self.cursor.execute("""
+            SELECT
+                transactions.id,
+                books.title,
+                members.name,
+                transactions.issue_date,
+                transactions.due_date,
+                transactions.return_date,
+                transactions.fine
+            FROM transactions
+            JOIN books
+                ON transactions.book_id = books.id
+            JOIN members
+                ON transactions.member_id = members.id
+        """)
+
+        transactions = self.cursor.fetchall()
+
+        print("\n" + "=" * 100)
+        print("TRANSACTION HISTORY")
+        print("=" * 100)
+
+        if not transactions:
+            print("No transactions found.")
+            return
+
+        for t in transactions:
+            status = "Returned" if t[5] else "Issued"
+
+            print(
+                f"Transaction ID: {t[0]} | "
+                f"Book: {t[1]} | "
+                f"Member: {t[2]} | "
+                f"Issue: {t[3]} | "
+                f"Due: {t[4]} | "
+                f"Return: {t[5]} | "
+                f"Fine: ₹{t[6]} | "
+                f"Status: {status}"
+            )
+
+    def close(self):
+        self.conn.close()
+
+
+# =====================================================
+# MAIN PROGRAM
+# =====================================================
+
+def main():
+
+    library = Library()
+
+    while True:
+
+        print("\n")
+        print("=" * 50)
+        print("       LIBRARY MANAGEMENT SYSTEM")
+        print("=" * 50)
+
+        print("1. Add Book")
+        print("2. Remove Book")
+        print("3. Display Books")
+        print("4. Search Book")
+        print("5. Add Member")
+        print("6. Display Members")
+        print("7. Issue Book")
+        print("8. Return Book")
+        print("9. Transaction History")
+        print("10. Exit")
+
+        choice = input("\nEnter your choice: ")
+
+        if choice == "1":
+
+            title = input("Enter book title: ")
+            author = input("Enter author: ")
+            category = input("Enter category: ")
+            quantity = int(input("Enter quantity: "))
+
+            library.add_book(
+                title,
+                author,
+                category,
+                quantity
+            )
+
+        elif choice == "2":
+
+            book_id = int(input("Enter book ID: "))
+            library.remove_book(book_id)
+
+        elif choice == "3":
+
+            library.display_books()
+
+        elif choice == "4":
+
+            keyword = input(
+                "Enter title/author/category to search: "
+            )
+
+            library.search_book(keyword)
+
+        elif choice == "5":
+
+            name = input("Enter member name: ")
+            email = input("Enter email: ")
+            phone = input("Enter phone: ")
+
+            library.add_member(
+                name,
+                email,
+                phone
+            )
+
+        elif choice == "6":
+
+            library.display_members()
+
+        elif choice == "7":
+
+            book_id = int(input("Enter book ID: "))
+            member_id = int(input("Enter member ID: "))
+
+            library.issue_book(
+                book_id,
+                member_id
+            )
+
+        elif choice == "8":
+
+            transaction_id = int(
+                input("Enter transaction ID: ")
+            )
+
+            library.return_book(
+                transaction_id
+            )
+
+        elif choice == "9":
+
+            library.display_transactions()
+
+        elif choice == "10":
+
+            library.close()
+            print("\nThank you for using the Library Management System!")
+            break
+
+        else:
+
+            print("\nInvalid choice. Please try again.")
+
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    main()
